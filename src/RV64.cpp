@@ -74,10 +74,20 @@ namespace riscv_tlm {
                 return ret_value;
             }
 
+            /* Map cause code to the corresponding mip bit */
+            BaseType cause_code = int_cause & 0x7FFFFFFF;
+            BaseType mip_bit;
+            switch (cause_code) {
+                case 3:  mip_bit = MIP_MSIP; break;
+                case 7:  mip_bit = MIP_MTIP; break;
+                case 11: mip_bit = MIP_MEIP; break;
+                default: mip_bit = MIP_MEIP; break;
+            }
+
             csr_temp = register_bank->getCSR(CSR_MIP);
 
-            if ((csr_temp & MIP_MEIP) == 0) {
-                csr_temp |= MIP_MEIP;  // MEIP bit in MIP register (11th bit)
+            if ((csr_temp & mip_bit) == 0) {
+                csr_temp |= mip_bit;
                 register_bank->setCSR(CSR_MIP, csr_temp);
 
                 logger->debug("{} ns. PC: 0x{:x}. Interrupt!", sc_core::sc_time_stamp().value(),
@@ -91,8 +101,8 @@ namespace riscv_tlm {
                               register_bank->getPC(),
                               old_pc);
 
-                /* update MCAUSE register */
-                register_bank->setCSR(CSR_MCAUSE, 0x80000000);
+                /* update MCAUSE register, use the cause from the interrupt source */
+                register_bank->setCSR(CSR_MCAUSE, int_cause);
 
                 /* set new PC address */
                 BaseType new_pc = register_bank->getCSR(CSR_MTVEC);
@@ -109,7 +119,17 @@ namespace riscv_tlm {
         } else {
             if (!irq_already_down) {
                 csr_temp = register_bank->getCSR(CSR_MIP);
-                csr_temp &= ~MIP_MEIP;
+                /* Clear the pending bit that was set during interrupt delivery.
+                   Use int_cause to determine which bit to clear. */
+                BaseType cause_code = int_cause & 0x7FFFFFFF;
+                BaseType mip_bit;
+                switch (cause_code) {
+                    case 3:  mip_bit = MIP_MSIP; break;
+                    case 7:  mip_bit = MIP_MTIP; break;
+                    case 11: mip_bit = MIP_MEIP; break;
+                    default: mip_bit = MIP_MEIP; break;
+                }
+                csr_temp &= ~mip_bit;
                 register_bank->setCSR(CSR_MIP, csr_temp);
                 irq_already_down = true;
             }

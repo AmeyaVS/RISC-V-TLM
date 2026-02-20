@@ -1534,13 +1534,22 @@ namespace riscv_tlm {
 
             this->regs->setPC(new_pc);
 
-            // update mstatus
+            /* Restore mstatus privilege stack per spec:
+             * MIE <- MPIE (unconditional), MPIE <- 1,
+             * MPP <- least-privileged supported mode */
             unsigned_T csr_temp;
             csr_temp = this->regs->getCSR(CSR_MSTATUS);
             if (csr_temp & MSTATUS_MPIE) {
                 csr_temp |= MSTATUS_MIE;
+            } else {
+                csr_temp &= ~MSTATUS_MIE;
             }
             csr_temp |= MSTATUS_MPIE;
+            /* MPP <- least-privileged supported mode (M for now)
+             * TODO: when U-mode is implemented, set MPP to 0x0 (U-mode)
+             * instead of 0x3 (M-mode) */
+            csr_temp &= ~(0x3 << 11); /* clear MPP (bits 12:11) */
+            csr_temp |= (0x3 << 11);  /* 0x3 = M-mode */
             this->regs->setCSR(CSR_MSTATUS, csr_temp);
 
             return true;

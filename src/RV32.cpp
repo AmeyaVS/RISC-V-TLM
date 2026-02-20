@@ -76,14 +76,24 @@ namespace riscv_tlm {
                 return ret_value;
             }
 
-            /* Map cause code to the corresponding mip bit */
+            /* Map cause code to the corresponding mip/mie bit */
             BaseType cause_code = int_cause & 0x7FFFFFFF;
             BaseType mip_bit;
+            BaseType mie_bit;
             switch (cause_code) {
-                case 3:  mip_bit = MIP_MSIP; break;
-                case 7:  mip_bit = MIP_MTIP; break;
-                case 11: mip_bit = MIP_MEIP; break;
-                default: mip_bit = MIP_MEIP; break;
+                case 3:  mip_bit = MIP_MSIP; mie_bit = MIE_MSIE; break;
+                case 7:  mip_bit = MIP_MTIP; mie_bit = MIE_MTIE; break;
+                case 11: mip_bit = MIP_MEIP; mie_bit = MIE_MEIE; break;
+                default: mip_bit = MIP_MEIP; mie_bit = MIE_MEIE; break;
+            }
+
+            /* Check per-source enable in mie register */
+            BaseType mie_val = register_bank->getCSR(CSR_MIE);
+            if ((mie_val & mie_bit) == 0) {
+                logger->debug("{} ns. PC: 0x{:x}. Interrupt masked by mie",
+                              sc_core::sc_time_stamp().value(),
+                              register_bank->getPC());
+                return ret_value;
             }
 
             csr_temp = register_bank->getCSR(CSR_MIP);
@@ -94,6 +104,21 @@ namespace riscv_tlm {
 
                 logger->debug("{} ns. PC: 0x{:x}. Interrupt!", sc_core::sc_time_stamp().value(),
                               register_bank->getPC());
+
+                /* Save mstatus privilege stack: MPIE <- MIE, MIE <- 0, MPP <- M */
+                BaseType mstatus = register_bank->getCSR(CSR_MSTATUS);
+                if (mstatus & MSTATUS_MIE) {
+                    mstatus |= MSTATUS_MPIE;
+                } else {
+                    mstatus &= ~MSTATUS_MPIE;
+                }
+                mstatus &= ~MSTATUS_MIE;
+                /* MPP <- previous privilege mode (M-mode for now)
+                 * TODO: when U/S-mode is implemented, set MPP to the
+                 * privilege mode that was active before the trap */
+                mstatus &= ~(0x3 << 11); /* clear MPP (bits 12:11) */
+                mstatus |= (0x3 << 11);  /* 0x3 = M-mode */
+                register_bank->setCSR(CSR_MSTATUS, mstatus);
 
                 /* updated MEPC register */
                 BaseType old_pc = register_bank->getPC();
@@ -106,9 +131,21 @@ namespace riscv_tlm {
                 /* update MCAUSE register, use the cause from the interrupt source */
                 register_bank->setCSR(CSR_MCAUSE, int_cause);
 
-                /* set new PC address */
-                BaseType new_pc = register_bank->getCSR(CSR_MTVEC);
-                //new_pc = new_pc & 0xFFFFFFFC; // last two bits always to 0
+                /* mtval is set to 0 for standard interrupts */
+                register_bank->setCSR(CSR_MTVAL, 0);
+
+                /* set new PC address, respecting mtvec MODE */
+                BaseType mtvec = register_bank->getCSR(CSR_MTVEC);
+                BaseType mode = mtvec & 0x3;
+                BaseType base = mtvec & ~0x3;
+                BaseType new_pc;
+                if (mode == 1) {
+                    /* Vectored: interrupts go to BASE + 4 * cause_code */
+                    new_pc = base + 4 * cause_code;
+                } else {
+                    /* Direct: all traps go to BASE */
+                    new_pc = base;
+                }
                 logger->debug("{} ns. PC: 0x{:x}. NEW PC Value 0x{:x}", sc_core::sc_time_stamp().value(),
                               register_bank->getPC(),
                               new_pc);
